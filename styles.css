@@ -21,6 +21,9 @@
   --ring-compact: 120px;
   --ring-small: 96px;
   --seg-width: 14;
+  --dur: 550ms;                           /* заливка сегмента */
+  --dur-fast: 200ms;                      /* подсветка активного сегмента */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * { box-sizing: border-box; }
@@ -83,16 +86,40 @@ button, textarea { font: inherit; color: inherit; }
 }
 .ring__icon svg { width: 24%; height: 24%; }
 
+/* Три слоя на сегмент: трек (всегда), подсветка активного, заливка «выполнено».
+   Заливка идёт по ходу часовой стрелки, как набор шкалы в Face ID. */
 .seg { fill: none; stroke-width: var(--seg-width); stroke-linecap: round; }
-.seg--empty { stroke: var(--track); }
-.seg--active { stroke: var(--accent-soft); }
-.seg--done { stroke: var(--accent); }
+.seg--track { stroke: var(--track); }
+.seg--active {
+  stroke: var(--accent-soft); opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.seg--fill {
+  stroke: var(--accent); stroke-dasharray: 100; stroke-dashoffset: 100; opacity: 0;
+  /* пустой сегмент прячем после того, как заливка «убежала» */
+  transition: stroke-dashoffset var(--dur) var(--ease), opacity 0s linear var(--dur);
+}
+.seg-g[data-state="active"] .seg--active { opacity: 1; }
+.seg-g[data-state="done"] .seg--fill {
+  stroke-dashoffset: 0; opacity: 1;
+  transition: stroke-dashoffset var(--dur) var(--ease), opacity 0s;
+}
 
-.ring[data-mode="recording"] .seg--active { stroke: var(--rec); }
+.ring[data-mode="recording"] .seg--active { stroke: var(--rec); animation: seg-pulse 1.4s ease-in-out infinite; }
 .ring[data-mode="recording"] .ring__icon { color: var(--rec); }
-.ring[data-mode="recognizing"] .seg--active { stroke: var(--accent); stroke-dasharray: 2 16; }
+.ring[data-mode="recognizing"] .seg--active {
+  stroke: var(--accent); stroke-dasharray: 2 16; animation: seg-march 1.2s linear infinite;
+}
 .ring[data-mode="error"] .seg--active { stroke: var(--danger); }
 .ring[data-mode="error"] .ring__icon { color: var(--danger); }
+
+@keyframes seg-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
+@keyframes seg-march { to { stroke-dashoffset: -36; } }
+
+/* Крупная иконка без кольца (старт и доступ к микрофону) */
+.hero { width: 88px; height: 88px; display: grid; place-items: center; color: var(--accent); margin: 24px 0 8px; }
+.hero svg { width: 100%; height: 100%; }
+.hero--error { color: var(--danger); }
 
 .timer { font-size: 20px; font-variant-numeric: tabular-nums; font-weight: 600; margin-top: -4px; }
 

@@ -260,7 +260,9 @@
     if (i < 0) goSummary(); else goQuestion(i);
   }
 
-  function goQuestion(i, editing) {
+  // editing: правка с экрана итога (после подтверждения возврат на итог).
+  // revisit: возврат кнопкой «Назад» или проход вперёд по уже отвеченным вопросам (показываем ответ на проверку).
+  function goQuestion(i, editing, revisit) {
     abortSession();
     state.screen = 'question';
     state.q = i;
@@ -269,7 +271,7 @@
     state.limitHit = false;
     state.elapsed = 0;
     const ex = state.answers[i];
-    if (state.editing && ex) {
+    if ((state.editing || revisit) && ex) {
       state.pending = { ...ex };
       state.qState = 'review';
     } else if (state.prefersText) {
@@ -285,7 +287,7 @@
 
   function next() {
     if (state.editing) { state.editing = false; return goSummary(); }
-    if (state.q < N - 1) return goQuestion(state.q + 1);
+    if (state.q < N - 1) return goQuestion(state.q + 1, false, true);
     goSummary();
   }
 
@@ -373,6 +375,18 @@
       state.pending = null;
       render();
     },
+    back: () => {
+      if (state.editing) {
+        // Правка отменена, ответ не менялся: возвращаемся на итог без пересборки описания.
+        abortSession();
+        state.editing = false;
+        state.pending = null;
+        state.screen = 'summary';
+        render();
+        return;
+      }
+      if (state.q > 0) goQuestion(state.q - 1, false, true);
+    },
     record: () => startRecording(false),
     retry: () => startRecording(!!state.pending),
     stop: () => stop(session, 'user'),
@@ -420,7 +434,8 @@
     check: '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
     warn: '<path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5v.5"/>',
     pencil: '<path d="M4 20l1-4L16 5l3 3L8 19z"/>',
-    close: '<path d="M6 6l12 12M18 6L6 18"/>'
+    close: '<path d="M6 6l12 12M18 6L6 18"/>',
+    back: '<path d="M15 5l-7 7 7 7"/>'
   };
   const icon = name => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
 
@@ -430,21 +445,40 @@
     return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${r} ${r} 0 0 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
   }
 
+  // Состояние сегмента: empty | active | done.
+  // Уже подтверждённый ответ, который пользователь просматривает, остаётся done,
+  // пока он не начал записывать заново.
   function segStates() {
     return state.answers.map((a, i) => {
-      if (state.screen === 'question' && i === state.q) return state.qState === 'accepted' ? 'done' : 'active';
+      if (state.screen === 'question' && i === state.q) {
+        if (state.qState === 'accepted') return 'done';
+        if (a && state.qState === 'review') return 'done';
+        return 'active';
+      }
       return a ? 'done' : 'empty';
     });
   }
 
+  // Состояния сегментов в прошлой отрисовке: от них кольцо плавно переходит к новым.
+  let lastSegs = null;
+  let nextSegs = null;
+
   function ringBlock({ mode = '', iconName = '', size = '' } = {}) {
     const segs = segStates();
+    const prev = lastSegs || Array(N).fill('empty');
+    nextSegs = segs;
     const gap = 16;
     let paths = '';
     for (let i = 0; i < N; i++) {
       const a0 = -90 + i * 90 + gap / 2;
       const a1 = -90 + (i + 1) * 90 - gap / 2;
-      paths += `<path class="seg seg--${segs[i]}" d="${arc(120, 120, 104, a0, a1)}"/>`;
+      const d = arc(120, 120, 104, a0, a1);
+      // Рисуем с прошлым состоянием; после вставки в DOM переключаем на новое (см. render), CSS анимирует переход.
+      paths += `<g class="seg-g" data-state="${prev[i]}" data-next="${segs[i]}">
+        <path class="seg seg--track" d="${d}"/>
+        <path class="seg seg--active" d="${d}"/>
+        <path class="seg seg--fill" pathLength="100" d="${d}"/>
+      </g>`;
     }
     const done = segs.filter(s => s === 'done').length;
     return `<div class="ring ${size ? 'ring--' + size : ''}" data-mode="${mode}" role="img" aria-label="${esc(T.ringLabel(done, N))}">
@@ -452,6 +486,9 @@
       ${iconName ? `<div class="ring__icon">${icon(iconName)}</div>` : ''}
     </div>`;
   }
+
+  // Крупная иконка без кольца: стартовый экран и экран доступа к микрофону.
+  const hero = (name, isError) => `<div class="hero ${isError ? 'hero--error' : ''}" aria-hidden="true">${icon(name)}</div>`;
 
   const btn = (action, label, cls = 'btn--primary', extra = '') =>
     `<button class="btn ${cls}" data-action="${action}" ${extra}>${esc(label)}</button>`;
@@ -467,7 +504,7 @@
     const meta = draft ? T.draft.meta(n, N) : T.welcome.meta;
     return screenWrap(
       emptyBar,
-      `${ringBlock({ iconName: 'mic' })}<h1 class="h1" id="title" tabindex="-1">${esc(title)}</h1><p class="meta">${esc(meta)}</p>`,
+      `${hero('mic')}<h1 class="h1" id="title" tabindex="-1">${esc(title)}</h1><p class="meta">${esc(meta)}</p>`,
       draft ? btn('resume', T.draft.resume) + link('restart', T.draft.restart) : btn('start', T.welcome.start)
     );
   }
@@ -481,7 +518,7 @@
       : btn('useText', T.unsupported.text);
     return screenWrap(
       emptyBar,
-      `${ringBlock({ mode: k === 'prompt' ? '' : 'error', iconName: k === 'prompt' ? 'mic' : 'warn' })}
+      `${hero(k === 'prompt' ? 'mic' : 'warn', k !== 'prompt')}
        <h1 class="h1" id="title" tabindex="-1">${esc(t.title)}</h1><p class="body-text">${esc(t.body)}</p>${note}`,
       actions
     );
@@ -524,7 +561,11 @@
     const iconName = { ready: 'mic', recording: 'wave', recognizing: 'dots', accepted: 'check', error: 'warn', text: 'pencil', review: 'lines' }[s];
     const mode = s === 'error' ? 'error' : (s === 'recording' || s === 'recognizing') ? s : '';
 
-    const bar = `<header class="bar"><span></span><span class="counter" id="counter">${esc(T.q.counter(state.q + 1, N))}</span>
+    const canBack = state.editing || state.q > 0;
+    const backBtn = canBack
+      ? `<button class="icon-btn" data-action="back" aria-label="${esc(T.q.back)}" ${s === 'accepted' ? 'disabled' : ''}>${icon('back')}</button>`
+      : '<span></span>';
+    const bar = `<header class="bar">${backBtn}<span class="counter" id="counter">${esc(T.q.counter(state.q + 1, N))}</span>
       <button class="icon-btn" data-action="close" aria-label="${esc(T.q.close)}">${icon('close')}</button></header>`;
 
     let c = '';
@@ -616,7 +657,16 @@
 
   function render() {
     const views = { welcome: viewWelcome, access: viewAccess, question: viewQuestion, summary: viewSummary };
+    nextSegs = null;
     root.innerHTML = views[state.screen]();
+
+    // Плавный переход сегментов: после вставки в DOM переключаем data-state на новое значение.
+    if (nextSegs) {
+      const groups = root.querySelectorAll('.seg-g');
+      void root.offsetWidth; // зафиксировать исходное состояние
+      requestAnimationFrame(() => groups.forEach(g => { g.dataset.state = g.dataset.next; }));
+      lastSegs = nextSegs;
+    }
 
     const focusKey = `${state.screen}:${state.q}:${state.editing}:${state.accessKind}`;
     const title = document.getElementById('title');
