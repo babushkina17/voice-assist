@@ -35,6 +35,7 @@
     limitHit: false,
     elapsed: 0,
     focusText: false,
+    confirmRestart: false,
     gen: { token: 0, status: 'idle', result: null, slow: false },
     copied: false
   };
@@ -295,7 +296,9 @@
     abortSession();
     state.screen = 'summary';
     state.editing = false;
-    startGeneration();
+    state.confirmRestart = false;
+    resetGeneration(); // описание создаётся только по кнопке «Создать вакансию»
+    render();
   }
 
   // ---------- Генерация ----------
@@ -309,6 +312,7 @@
       if (state.gen.token === token && state.gen.status === 'loading') { state.gen.slow = true; render(); }
     }, C.GENERATION_SLOW_MS);
     render();
+    scrollToVacancy();
     try {
       const result = await window.generateVacancy(state.answers.map(a => a.text));
       if (state.gen.token !== token) return;
@@ -320,6 +324,18 @@
     }
     clearTimeout(slowTimer);
     render();
+    scrollToVacancy();
+  }
+
+  function scrollToVacancy() {
+    const el = document.getElementById('vacancy');
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'start' });
+  }
+
+  function resetGeneration() {
+    clearTimeout(slowTimer);
+    state.gen = { token: state.gen.token + 1, status: 'idle', result: null, slow: false };
+    state.copied = false;
   }
 
   function toPlain(r) {
@@ -366,7 +382,7 @@
   const A = {
     start: () => beginFlow(),
     resume: () => beginFlow(),
-    restart: () => { state.answers = Array(N).fill(null); saveDraft(); beginFlow(); },
+    restart: () => { state.answers = Array(N).fill(null); saveDraft(); resetGeneration(); beginFlow(); },
     allow, recheck, useText,
     close: () => {
       abortSession();
@@ -406,7 +422,21 @@
     },
     edit: d => goQuestion(Number(d.i), true),
     copy,
-    regen: () => startGeneration()
+    create: () => startGeneration(),
+    restartAsk: () => { state.confirmRestart = true; render(); },
+    restartCancel: () => { state.confirmRestart = false; render(); },
+    restartDo: () => {
+      abortSession();
+      state.answers = Array(N).fill(null);
+      saveDraft();
+      resetGeneration();
+      state.confirmRestart = false;
+      state.prefersText = false;
+      state.pending = null;
+      state.editing = false;
+      state.screen = 'welcome';
+      render();
+    }
   };
 
   root.addEventListener('click', e => {
@@ -608,28 +638,49 @@
     }</section>`).join('');
   }
 
-  function viewSummary() {
-    const g = state.gen;
-    let body;
-    if (g.status === 'error') {
-      body = `<div class="card"><p class="msg msg--error">${esc(T.summary.error)}</p></div>`;
-    } else if (g.status === 'ready') {
-      body = `<article class="card doc">${sectionsHTML(g.result)}</article>`;
-    } else {
-      body = `<div class="card" aria-busy="true"><p class="status">${esc(T.summary.generating)}</p>
-        <div class="skel"></div><div class="skel w80"></div><div class="skel"></div><div class="skel w60"></div>
-        ${g.slow ? `<p class="meta">${esc(T.summary.slow)}</p>` : ''}</div>`;
-    }
-    const cards = state.answers.map((a, i) => `<div class="card">
+  function answerCards() {
+    return state.answers.map((a, i) => `<div class="card">
         <p class="label">${esc(T.questions[i].q)}</p>
         <p class="body-text">${esc(a.text)}</p>
         <button class="link link--inline" data-action="edit" data-i="${i}">${esc(T.summary.edit)}</button>
       </div>`).join('');
-    const head = `<div style="display:flex;flex-direction:column;align-items:center;gap:8px">${ringBlock({ size: 'small', iconName: 'check' })}
-      <h1 class="h1" id="title" tabindex="-1">${esc(T.summary.title)}</h1></div>`;
-    const actions = g.status === 'error' ? btn('regen', T.summary.retry)
-      : btn('copy', state.copied ? T.summary.copied : T.summary.copy, 'btn--primary', g.status === 'ready' ? '' : 'disabled');
-    return screenWrap(emptyBar, `${head}${body}<h2 class="h2">${esc(T.summary.answers)}</h2>${cards}`, actions, true);
+  }
+
+  // Экран итога: сверху «Ваши ответы» (карточки Вопрос/Ответ с «Изменить»), под ними описание вакансии,
+  // когда оно создано. Кнопки всегда в одном порядке: «Создать вакансию», «Скопировать», «Начать заново».
+  function viewSummary() {
+    const g = state.gen;
+    const S = T.summary;
+
+    const head = `<div class="summary-head">${ringBlock({ size: 'small', iconName: 'check' })}
+      <h1 class="h1" id="title" tabindex="-1">${esc(S.answers)}</h1></div>`;
+
+    let result = '';
+    if (g.status === 'loading') {
+      result = `<section class="vacancy" id="vacancy"><h2 class="h2">${esc(S.title)}</h2>
+        <div class="card" aria-busy="true"><p class="status">${esc(S.generating)}</p>
+        <div class="skel"></div><div class="skel w80"></div><div class="skel"></div><div class="skel w60"></div>
+        ${g.slow ? `<p class="meta">${esc(S.slow)}</p>` : ''}</div></section>`;
+    } else if (g.status === 'ready') {
+      result = `<section class="vacancy" id="vacancy"><h2 class="h2">${esc(S.title)}</h2>
+        <article class="card doc">${sectionsHTML(g.result)}</article></section>`;
+    } else if (g.status === 'error') {
+      result = `<section class="vacancy" id="vacancy"><div class="card"><p class="msg msg--error">${esc(S.error)}</p></div></section>`;
+    }
+
+    let actions;
+    if (state.confirmRestart) {
+      actions = `<p class="msg msg--ask">${esc(S.restartAsk)}</p>`
+        + btn('restartDo', S.restartConfirm, 'btn--danger')
+        + link('restartCancel', S.cancel);
+    } else {
+      const busy = g.status === 'loading';
+      const label = busy ? S.creating : g.status === 'error' ? S.retry : S.create;
+      actions = btn('create', label, 'btn--primary', busy ? 'disabled' : '')
+        + btn('copy', state.copied ? S.copied : S.copy, 'btn--secondary', g.status === 'ready' ? '' : 'disabled')
+        + link('restartAsk', S.restart);
+    }
+    return screenWrap(emptyBar, `${head}${answerCards()}${result}`, actions, true);
   }
 
   // ---------- Озвучивание статусов и фокус ----------
@@ -647,7 +698,8 @@
     }
     if (state.screen === 'summary') {
       return state.gen.status === 'loading' ? T.summary.generating
-        : state.gen.status === 'ready' ? T.summary.ready : T.summary.error;
+        : state.gen.status === 'ready' ? T.summary.ready
+        : state.gen.status === 'error' ? T.summary.error : T.summary.answers;
     }
     return '';
   }
@@ -668,7 +720,7 @@
       lastSegs = nextSegs;
     }
 
-    const focusKey = `${state.screen}:${state.q}:${state.editing}:${state.accessKind}`;
+    const focusKey = `${state.screen}:${state.q}:${state.editing}:${state.accessKind}:${state.screen === 'summary' ? state.gen.status : ''}`;
     const title = document.getElementById('title');
     if (focusKey !== lastFocusKey) {
       lastFocusKey = focusKey;

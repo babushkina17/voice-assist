@@ -147,6 +147,7 @@ button, textarea { font: inherit; color: inherit; }
 }
 .btn--primary { background: var(--accent); color: var(--on-accent); }
 .btn--rec { background: var(--rec); color: var(--on-accent); }
+.btn--danger { background: var(--danger); color: var(--on-accent); }
 .btn--secondary { background: transparent; color: var(--accent); border: 1.5px solid var(--accent); }
 .btn:disabled { background: var(--disabled-bg); color: #fff; border-color: transparent; cursor: not-allowed; }
 .link {
@@ -167,6 +168,9 @@ button, textarea { font: inherit; color: inherit; }
 .skel.w80 { width: 80%; }
 .skel.w60 { width: 60%; }
 .status { margin: 0 0 4px; color: var(--muted); }
+.summary-head { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+.vacancy { display: flex; flex-direction: column; gap: 8px; scroll-margin-top: 8px; }
+.msg--ask { text-align: center; color: var(--text); }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
