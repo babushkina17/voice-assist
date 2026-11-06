@@ -175,3 +175,21 @@ button, textarea { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; scroll-behavior: auto !important; }
 }
+
+/* ---------- Демо-режим (?demo=1) ---------- */
+body.has-demo .screen { min-height: calc(100dvh - 38px); }
+.demo-panel { position: sticky; top: 0; z-index: 10; background: #1A1B1F; color: #fff; font-size: 13px; }
+.demo-panel summary { padding: 10px 14px; cursor: pointer; list-style: none; font-weight: 600; }
+.demo-panel summary::-webkit-details-marker { display: none; }
+.demo-panel summary::after { content: " ▾"; }
+.demo-panel[open] summary::after { content: " ▴"; }
+.demo__body { padding: 4px 14px 14px; display: flex; flex-direction: column; gap: 8px; max-height: 72dvh; overflow: auto; }
+.demo__row { display: flex; flex-wrap: wrap; gap: 6px; }
+.demo__label { margin: 4px 0 0; color: #B9BBC6; }
+.demo__note { margin: 4px 0 0; color: #B9BBC6; }
+.demo-panel button {
+  min-height: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid #5B5D68;
+  background: #2A2B31; color: #fff; font-size: 13px; cursor: pointer;
+}
+.demo-panel button[aria-pressed="true"] { background: #fff; color: #1A1B1F; border-color: #fff; }
+.demo-panel button:focus-visible, .demo-panel summary:focus-visible { outline: 3px solid #AAB4F5; outline-offset: 2px; }
