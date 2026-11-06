@@ -15,6 +15,16 @@
   const fmt = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
   const $ = sel => root.querySelector(sel);
 
+  // ---------- Браузер ----------
+  const UA = navigator.userAgent || '';
+  const isYandex = /YaBrowser/i.test(UA);
+  const isSafari = /Safari/i.test(UA) && !/Chrome|Chromium|CriOS|FxiOS|Edg|YaBrowser|OPR|Android/i.test(UA);
+  // Подсказка под конкретный браузер: показывается рядом с кодом ошибки.
+  function browserHint() {
+    const h = isYandex ? T.hints.yandex : isSafari ? T.hints.safari : '';
+    return h ? `<p class="note">${esc(h)}</p>` : '';
+  }
+
   // ---------- Состояние ----------
   // screen:  welcome | access | question | summary
   // qState:  ready | recording | recognizing | review | text | error | accepted
@@ -65,7 +75,7 @@
 
   // ---------- Распознавание (адаптер) ----------
   // Контракт: start(), stop(), abort();
-  // колбэки: onstart() — микрофон реально включился; onresult(текстСессии);
+  // колбэки: onbegin() — служба распознавания запущена; onstart() — микрофон реально включился; onresult(текстСессии);
   //          onerror(вид, код): вид = 'no-speech' | 'denied' | 'mic' | 'network' | 'other'; onend().
   // Подмена для демо и тестов: window.__fakeRecognizerFactory.
 
@@ -98,12 +108,13 @@
     r.interimResults = true;
     r.maxAlternatives = 1;
     const api = {
-      onstart: null, onresult: null, onerror: null, onend: null,
+      onstart: null, onbegin: null, onresult: null, onerror: null, onend: null,
       start() { r.start(); },
       stop() { try { r.stop(); } catch (e) { /* уже остановлено */ } },
       abort() { try { r.abort(); } catch (e) { /* уже остановлено */ } }
     };
-    r.onaudiostart = () => { if (api.onstart) api.onstart(); };
+    r.onstart = () => { if (api.onbegin) api.onbegin(); };            // служба запущена
+    r.onaudiostart = () => { if (api.onstart) api.onstart(); };       // микрофон включился
     r.onresult = e => { if (api.onresult) api.onresult(joinResults(e.results)); };
     r.onerror = e => {
       const code = e.error;
@@ -149,13 +160,15 @@
     s.rec.onresult = t => {
       if (session !== s) return;
       s.text = t;
+      s.sawStart = true;
       if (t.trim()) { s.heard = true; clearTimeout(s.timers.silence); }
       updateLive();
     };
     s.rec.onerror = (k, code) => { if (session === s) { s.error = k; s.code = code || k; } };
     // Отсчёт тишины начинается, когда микрофон включился, а не при нажатии кнопки:
     // запрос разрешения и подключение к службе распознавания могут занять секунды.
-    s.rec.onstart = () => { if (session === s && !s.heard) armSilence(s, C.SILENCE_MS); };
+    s.rec.onbegin = () => { if (session === s) s.sawStart = true; };
+    s.rec.onstart = () => { if (session === s) { s.sawStart = true; if (!s.heard) armSilence(s, C.SILENCE_MS); } };
     s.rec.onend = () => { if (session === s) finish(s); };
 
     state.qState = 'recording';
@@ -215,11 +228,15 @@
     const text = joinText(s.base, s.text);
     const reason = s.reason || 'auto';
 
-    if (s.error === 'denied') { state.voiceOk = false; setAccess('denied'); return; }
-    if (s.error === 'mic') { state.voiceOk = false; setAccess('denied', T.denied.noMic); return; }
-    if (reason === 'silence') return fail('silence', s.base);
-    if (reason === 'interrupted') return fail('interrupted', text);
+    // Ошибка, пришедшая от браузера, важнее остановки по тишине: иначе настоящая причина прячется за «Не слышим голос».
+    if (s.error === 'denied') { state.voiceOk = false; setAccess('denied', T.errors.code(s.code)); return; }
+    if (s.error === 'mic') { state.voiceOk = false; setAccess('denied', T.denied.noMic + ' ' + T.errors.code(s.code)); return; }
     if (s.error === 'network') return fail('network', text, s.code);
+    if (reason === 'silence') {
+      // Браузер не сообщил ни о запуске службы, ни о включении микрофона: это не тишина, запись не началась.
+      return s.sawStart ? fail('silence', s.base) : fail('noaudio', s.base, 'no-audiostart');
+    }
+    if (reason === 'interrupted') return fail('interrupted', text);
     if (s.error && s.error !== 'no-speech') return fail('recognition', text, s.code);
     if (!s.text.trim()) return fail('silence', s.base);
 
@@ -581,7 +598,7 @@
   function viewAccess() {
     const k = state.accessKind;
     const t = k === 'prompt' ? T.access : k === 'denied' ? T.denied : T.unsupported;
-    const note = state.accessNote ? `<p class="msg msg--error">${esc(state.accessNote)}</p>` : '';
+    const note = (state.accessNote ? `<p class="msg msg--error">${esc(state.accessNote)}</p>` : '') + (k === 'denied' ? browserHint() : '');
     const actions = k === 'prompt' ? btn('allow', T.access.allow)
       : k === 'denied' ? btn('useText', T.denied.text) + link('recheck', T.denied.retry)
       : btn('useText', T.unsupported.text);
@@ -598,6 +615,7 @@
     switch (state.errorKind) {
       case 'silence': return T.errors.silence;
       case 'network': return has ? T.errors.network : T.errors.networkEmpty;
+      case 'noaudio': return T.errors.noaudio;
       case 'recognition': return has ? T.errors.recognition : T.errors.recognitionEmpty;
       case 'interrupted': return has ? T.errors.interrupted : T.errors.interruptedEmpty;
       default: return '';
@@ -665,6 +683,7 @@
     if (s === 'error') {
       c += `<p class="msg msg--error">${esc(errorMessage())}</p>`;
       if (state.errorCode) c += `<p class="note">${esc(T.errors.code(state.errorCode))}</p>`;
+      if (['network', 'noaudio', 'recognition'].includes(state.errorKind)) c += browserHint();
     }
     if (s === 'review' && state.pending && words(state.pending.text) < C.MIN_WORDS) c += `<p class="msg msg--error">${esc(T.errors.short)}</p>`;
     if (s === 'review' && state.limitHit) c += `<p class="meta">${esc(T.q.limit)}</p>`;
