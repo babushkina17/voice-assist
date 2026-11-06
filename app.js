@@ -28,7 +28,7 @@
     prefersText: false,
     q: 0,
     qState: 'ready',
-    errorKind: null,
+    errorKind: null, errorCode: null,
     pending: null,            // непринятый ответ текущего вопроса
     answers: loadDraft(),     // принятые ответы, хранятся в localStorage
     editing: false,
@@ -64,30 +64,57 @@
   }
 
   // ---------- Распознавание (адаптер) ----------
-  // Контракт: start(), stop(), abort(); колбэки onresult(текстСессии), onerror('no-speech'|'denied'|'other'), onend().
+  // Контракт: start(), stop(), abort();
+  // колбэки: onstart() — микрофон реально включился; onresult(текстСессии);
+  //          onerror(вид, код): вид = 'no-speech' | 'denied' | 'mic' | 'network' | 'other'; onend().
   // Подмена для демо и тестов: window.__fakeRecognizerFactory.
+
+  // Склейка результатов распознавания в один текст.
+  // Мобильные браузеры (Android Chrome) присылают повторы: одну и ту же фразу несколько раз
+  // или накопительные версии («привет», «привет как», «привет как дела»). Прямая склейка даёт задвоение слов.
+  // На мобильных убираем повтор и заменяем фразу её более полной версией. Фразы склеиваются через пробел.
+  function joinResults(results) {
+    const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+    const chunks = [];
+    for (let i = 0; i < results.length; i++) {
+      const t = String(results[i][0].transcript || '').trim();
+      if (!t) continue;
+      if (mobile && chunks.length) {
+        const a = t.toLowerCase();
+        const b = chunks[chunks.length - 1].toLowerCase();
+        if (a === b || b.startsWith(a)) continue;                 // повтор или более короткая версия
+        if (a.startsWith(b)) { chunks[chunks.length - 1] = t; continue; } // накопительная версия
+      }
+      chunks.push(t);
+    }
+    return chunks.join(' ');
+  }
+
   function createRecognizer() {
     if (window.__fakeRecognizerFactory) return window.__fakeRecognizerFactory();
     const r = new SR();
     r.lang = C.LANG;
     r.continuous = true;
     r.interimResults = true;
+    r.maxAlternatives = 1;
     const api = {
-      onresult: null, onerror: null, onend: null,
+      onstart: null, onresult: null, onerror: null, onend: null,
       start() { r.start(); },
       stop() { try { r.stop(); } catch (e) { /* уже остановлено */ } },
       abort() { try { r.abort(); } catch (e) { /* уже остановлено */ } }
     };
-    r.onresult = e => {
-      let t = '';
-      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
-      if (api.onresult) api.onresult(t);
-    };
+    r.onaudiostart = () => { if (api.onstart) api.onstart(); };
+    r.onresult = e => { if (api.onresult) api.onresult(joinResults(e.results)); };
     r.onerror = e => {
-      const k = e.error === 'no-speech' ? 'no-speech'
-        : (e.error === 'not-allowed' || e.error === 'service-not-allowed') ? 'denied'
-        : e.error === 'aborted' ? null : 'other';
-      if (k && api.onerror) api.onerror(k);
+      const code = e.error;
+      // network и service-not-allowed — недоступна сама служба распознавания, а не микрофон
+      const k = code === 'no-speech' ? 'no-speech'
+        : code === 'not-allowed' ? 'denied'
+        : code === 'audio-capture' ? 'mic'
+        : (code === 'network' || code === 'service-not-allowed' || code === 'language-not-supported') ? 'network'
+        : code === 'aborted' ? null : 'other';
+      if (window.console) console.warn('SpeechRecognition error:', code);
+      if (k && api.onerror) api.onerror(k, code);
     };
     r.onend = () => { if (api.onend) api.onend(); };
     return api;
@@ -125,18 +152,27 @@
       if (t.trim()) { s.heard = true; clearTimeout(s.timers.silence); }
       updateLive();
     };
-    s.rec.onerror = k => { if (session === s) s.error = k; };
+    s.rec.onerror = (k, code) => { if (session === s) { s.error = k; s.code = code || k; } };
+    // Отсчёт тишины начинается, когда микрофон включился, а не при нажатии кнопки:
+    // запрос разрешения и подключение к службе распознавания могут занять секунды.
+    s.rec.onstart = () => { if (session === s && !s.heard) armSilence(s, C.SILENCE_MS); };
     s.rec.onend = () => { if (session === s) finish(s); };
 
     state.qState = 'recording';
     state.errorKind = null;
+    state.errorCode = null;
     state.limitHit = false;
     state.elapsed = 0;
     render();
 
     try { s.rec.start(); } catch (e) { s.error = 'other'; finish(s); return; }
-    s.timers.silence = setTimeout(() => { if (session === s && !s.heard) stop(s, 'silence'); }, C.SILENCE_MS);
+    armSilence(s, C.SILENCE_MS + C.STARTUP_GRACE_MS);
     s.timers.tick = setInterval(tick, 250);
+  }
+
+  function armSilence(s, ms) {
+    clearTimeout(s.timers.silence);
+    s.timers.silence = setTimeout(() => { if (session === s && !s.heard) stop(s, 'silence'); }, ms);
   }
 
   function tick() {
@@ -162,10 +198,11 @@
     s.timers.fallback = setTimeout(() => finish(s), C.RECOGNITION_TIMEOUT_MS);
   }
 
-  function fail(kind, text) {
+  function fail(kind, text, code) {
     state.pending = text ? { raw: text, text, source: 'voice' } : null;
     state.qState = 'error';
     state.errorKind = kind;
+    state.errorCode = code || null;
     render();
   }
 
@@ -179,9 +216,11 @@
     const reason = s.reason || 'auto';
 
     if (s.error === 'denied') { state.voiceOk = false; setAccess('denied'); return; }
+    if (s.error === 'mic') { state.voiceOk = false; setAccess('denied', T.denied.noMic); return; }
     if (reason === 'silence') return fail('silence', s.base);
     if (reason === 'interrupted') return fail('interrupted', text);
-    if (s.error && s.error !== 'no-speech') return fail('recognition', text);
+    if (s.error === 'network') return fail('network', text, s.code);
+    if (s.error && s.error !== 'no-speech') return fail('recognition', text, s.code);
     if (!s.text.trim()) return fail('silence', s.base);
 
     state.pending = { raw: text, text, source: 'voice' };
@@ -558,6 +597,7 @@
     const has = !!(state.pending && state.pending.text);
     switch (state.errorKind) {
       case 'silence': return T.errors.silence;
+      case 'network': return has ? T.errors.network : T.errors.networkEmpty;
       case 'recognition': return has ? T.errors.recognition : T.errors.recognitionEmpty;
       case 'interrupted': return has ? T.errors.interrupted : T.errors.interruptedEmpty;
       default: return '';
@@ -622,7 +662,10 @@
       c += `<p class="label">${esc(lbl)}</p><div class="transcript" id="transcript">${esc(state.pending.text)}</div>`;
     }
 
-    if (s === 'error') c += `<p class="msg msg--error">${esc(errorMessage())}</p>`;
+    if (s === 'error') {
+      c += `<p class="msg msg--error">${esc(errorMessage())}</p>`;
+      if (state.errorCode) c += `<p class="note">${esc(T.errors.code(state.errorCode))}</p>`;
+    }
     if (s === 'review' && state.pending && words(state.pending.text) < C.MIN_WORDS) c += `<p class="msg msg--error">${esc(T.errors.short)}</p>`;
     if (s === 'review' && state.limitHit) c += `<p class="meta">${esc(T.q.limit)}</p>`;
     if (s === 'ready' && state.answers[state.q]) c += `<p class="note">${esc(T.q.rerecordNote)}</p>`;
